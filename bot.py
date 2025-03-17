@@ -26,7 +26,7 @@ users = load_data()
 
 @bot.message_handler(commands=['start'])
 def start(message):
-    user_id = str(message.from_guser.id)
+    user_id = str(message.from_user.id)
 
     if user_id not in users:
         users[user_id] = {}
