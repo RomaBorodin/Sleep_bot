@@ -1,6 +1,6 @@
 import telebot
-import json
 import os
+import json
 from datetime import datetime
 
 TOKEN = os.getenv('TG_TOKEN')
