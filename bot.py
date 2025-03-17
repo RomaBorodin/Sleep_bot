@@ -1,32 +1,56 @@
 import telebot
+import json
 import os
 from datetime import datetime
 
 TOKEN = os.getenv('TG_TOKEN')
 bot = telebot.TeleBot(TOKEN)
 
-data = {}
+DATA_FILE = 'sleep_data.json'
+
+
+def load_data():
+    if os.path.exists(DATA_FILE) and os.path.getsize(DATA_FILE):
+        with open(DATA_FILE, encoding='utf-8') as file:
+            return json.load(file)
+    return {}
+
+
+def save_data():
+    with open(DATA_FILE, 'w', encoding='utf-8') as file:
+        json.dump(users, file, indent=4, ensure_ascii=False)
+
+
+users = load_data()
 
 
 @bot.message_handler(commands=['start'])
 def start(message):
-    data[message.from_user.id] = {}
+    user_id = str(message.from_guser.id)
+
+    if user_id not in users:
+        users[user_id] = {}
+        save_data()
 
     greeting = 'Привет, я буду помогать тебе отслеживать параметры сна.'
-    commands_list = 'Используй команды: \n/sleep для начала отсчета ' \
-                    '\n/wake для конца отсчета \n/quality для оценки качества сна ' \
-                    '\n/notes для написания заметок \n/show_notes для показа заметок'
+    command_list = 'Используй команды: \n/sleep для начала отсчета ' \
+                   '\n/wake для конца отсчета \n/quality для оценки качества сна ' \
+                   '\n/notes для написания заметок \n/show_notes для показа заметок'
     bot.send_message(message.chat.id, greeting)
-    bot.send_message(message.chat.id, commands_list)
+    bot.send_message(message.chat.id, command_list)
 
 
 @bot.message_handler(commands=['sleep'])
 def sleep(message):
-    if message.from_user.id in data:
-        data[message.from_user.id].clear()
-        data[message.from_user.id]['notes'] = []
+    user_id = str(message.from_user.id)
+    today = datetime.now().date().isoformat()
 
-        data[message.from_user.id]['start_time'] = datetime.now()
+    if user_id in users:
+        users[user_id][today] = {}
+        users[user_id][today]['notes'] = []
+        users[user_id][today]['start_time'] = datetime.now().isoformat()
+
+        save_data()
 
         reply = 'Спокойной ночи, не забудь сообщить мне, когда проснешься командой /wake'
         bot.reply_to(message, reply)
@@ -37,11 +61,16 @@ def sleep(message):
 
 @bot.message_handler(commands=['wake'])
 def wake(message):
+    user_id = str(message.from_user.id)
+    today = datetime.now().date().isoformat()
+
     try:
-        if 'duration' not in data[message.from_user.id]:
-            duration_obj = datetime.now() - data[message.from_user.id]['start_time']
+        if 'duration' not in users[user_id][today]:
+            duration_obj = datetime.now() - datetime.fromisoformat(users[user_id][today]['start_time'])
             duration = round(duration_obj.seconds / 3600, 3)
-            data[message.from_user.id]['duration'] = duration
+            users[user_id][today]['duration'] = duration
+
+            save_data()
 
             reply = (f'Доброе утро, ты поспал около {duration} часов. Не забудь оценить качество сна от 1 до 10 '
                      f'командой /quality и оставить заметки командой /notes')
@@ -56,14 +85,20 @@ def wake(message):
 
 @bot.message_handler(commands=['quality'])
 def quality(message):
+    user_id = str(message.from_user.id)
+    today = datetime.now().date().isoformat()
+
     try:
-        if data[message.from_user.id]['duration']:
+        if users[user_id][today]['duration']:
             quality_mark = int(list(message.text.split())[1])
 
             if 1 <= quality_mark <= 10:
-                data[message.from_user.id]['quality'] = quality_mark
+                users[user_id][today]['quality'] = quality_mark
                 reply = 'Спасибо за оценку качества сна'
                 bot.reply_to(message, reply)
+
+                save_data()
+
             else:
                 reply = 'Оценка должна быть в пределах от 1 до 10'
                 bot.reply_to(message, reply)
@@ -80,11 +115,16 @@ def quality(message):
 
 @bot.message_handler(commands=['notes'])
 def notes(message):
+    user_id = str(message.from_user.id)
+    today = datetime.now().date().isoformat()
+
     try:
-        if data[message.from_user.id]['duration']:
+        if users[user_id][today]['duration']:
             note_lst = list(message.text.split())[1:]
             note = ' '.join(note_lst)
-            data[message.from_user.id]['notes'].append(note)
+            users[user_id][today]['notes'].append(note)
+
+            save_data()
 
             reply = 'Заметка успешно сохранена'
             bot.reply_to(message, reply)
@@ -95,7 +135,10 @@ def notes(message):
 
 @bot.message_handler(commands=['show_notes'])
 def show_notes(message):
-    for i in data[message.from_user.id]['notes']:
+    user_id = str(message.from_user.id)
+    today = datetime.now().date().isoformat()
+
+    for i in users[user_id][today]['notes']:
         bot.send_message(message.chat.id, i)
 
 
