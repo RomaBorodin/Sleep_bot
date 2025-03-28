@@ -1,36 +1,22 @@
 import telebot
-import json
-import os
+import sqlite3 as sq
+import bot_queries as bq
+from os import getenv
 from datetime import datetime
 
-TOKEN = os.getenv('TG_TOKEN')
+TOKEN = getenv('TG_TOKEN')
 bot = telebot.TeleBot(TOKEN)
-
-DATA_FILE = 'sleep_data.json'
-
-
-def load_data():
-    if os.path.exists(DATA_FILE) and os.path.getsize(DATA_FILE):
-        with open(DATA_FILE, encoding='utf-8') as file:
-            return json.load(file)
-    return {}
-
-
-def save_data():
-    with open(DATA_FILE, 'w', encoding='utf-8') as file:
-        json.dump(users, file, indent=4, ensure_ascii=False)
-
-
-users = load_data()
 
 
 @bot.message_handler(commands=['start'])
 def start(message):
-    user_id = str(message.from_user.id)
+    user_id = int(message.from_user.id)
+    user_name = str(message.from_user.first_name)
 
-    if user_id not in users:
-        users[user_id] = {}
-        save_data()
+    bq.tables_creation()
+
+    if not bq.find_user(user_id):
+        bq.add_user(user_id, user_name)
 
     greeting = 'Привет, я буду помогать тебе отслеживать параметры сна.'
     commands_list = 'Используй команды: \n/sleep для начала отсчета ' \
@@ -42,79 +28,72 @@ def start(message):
 
 @bot.message_handler(commands=['sleep'])
 def sleep(message):
-    user_id = str(message.from_user.id)
-    today = datetime.now().date().isoformat()
+    user_id = int(message.from_user.id)
+    start_time = datetime.now().isoformat()
 
     try:
-        if users[user_id]:
-            active_sleep_date = max(users[user_id].keys())
-            if 'duration' not in users[user_id][active_sleep_date]:
+        if bq.get_last_record(user_id):
+            if bq.get_last_record(user_id)['duration'] is None:
                 reply = 'Ты еще не проснулся, чтобы начать новый отсчет, используй команду /wake'
                 bot.send_message(message.chat.id, reply)
                 return
 
-        users[user_id][today] = {}
-        users[user_id][today]['notes'] = []
-        users[user_id][today]['start_time'] = datetime.now().isoformat()
-
-        save_data()
+        bq.add_start_time(user_id, start_time)
 
         reply = 'Спокойной ночи, не забудь сообщить мне, когда проснешься командой /wake'
         bot.reply_to(message, reply)
 
-    except KeyError:
+    except sq.OperationalError:
         reply = 'Для начала используй команду /start'
         bot.send_message(message.chat.id, reply)
 
 
 @bot.message_handler(commands=['wake'])
 def wake(message):
-    user_id = str(message.from_user.id)
+    user_id = int(message.from_user.id)
 
     try:
-        if not users[user_id]:
+        if not bq.get_last_record(user_id):
             reply = 'Ты ещё не начинал отслеживание сна. Используй /sleep.'
             bot.send_message(message.chat.id, reply)
             return
 
-        last_sleep_date = max(users[user_id].keys())
-
-        if 'duration' in users[user_id][last_sleep_date]:
+        if bq.get_last_record(user_id)['duration'] is not None:
             reply = 'Я не вижу, чтобы ты сообщал мне о начале сна. Используй /sleep.'
             bot.send_message(message.chat.id, reply)
             return
 
-        start_time = datetime.fromisoformat(users[user_id][last_sleep_date]['start_time'])
+        last_record_id = bq.get_last_record(user_id)['id']
+
+        start_time = datetime.fromisoformat(bq.get_last_record(user_id)['start_time'])
 
         duration_obj = datetime.now() - start_time
         duration = round(duration_obj.total_seconds() / 3600, 3)
-        users[user_id][last_sleep_date]['duration'] = duration
-
-        save_data()
+        bq.add_duration(duration, last_record_id)
 
         reply = (f'Доброе утро, ты поспал около {duration} часов. Не забудь оценить качество сна от 1 до 10 '
                  f'командой /quality и оставить заметки командой /notes')
         bot.reply_to(message, reply)
 
-    except KeyError:
+    except sq.OperationalError:
         reply = 'Для начала используй команду /start'
         bot.send_message(message.chat.id, reply)
 
 
 @bot.message_handler(commands=['quality'])
 def quality(message):
-    user_id = str(message.from_user.id)
+    user_id = int(message.from_user.id)
 
     try:
-        if not users[user_id]:
+        if not bq.get_last_record(user_id):
             reply = 'Ты ещё не начинал отслеживание сна. Используй /sleep.'
             bot.send_message(message.chat.id, reply)
             return
 
         # пока оценку можно поставить только за последний сон, можно доработать
-        last_sleep_date = max(users[user_id].keys())
+        last_record_id = bq.get_last_record(user_id)['id']
 
-        if 'duration' not in users[user_id][last_sleep_date]:
+        if bq.get_last_record(user_id)['duration'] is None:
             reply = 'Ты не можешь оценить сон, если не спал. Используй команды /sleep и /wake'
             bot.send_message(message.chat.id, reply)
             return
@@ -122,12 +101,10 @@ def quality(message):
         try:
             quality_mark = int(message.text.split()[1])
             if 1 <= quality_mark <= 10:
-                users[user_id][last_sleep_date]['quality'] = quality_mark
+                bq.add_quality(quality_mark, last_record_id)
 
-                reply = f'Оценка сна {quality_mark} сохранена за {last_sleep_date}.'
+                reply = f'Оценка {quality_mark} сохранена.'
                 bot.reply_to(message, reply)
-
-                save_data()
 
             else:
                 reply = 'Оценка должна быть в пределах от 1 до 10'
@@ -137,63 +114,67 @@ def quality(message):
             reply = 'Используй команду в формате "/quality 8"'
             bot.send_message(message.chat.id, reply)
 
-    except KeyError:
+    except sq.OperationalError:
         reply = 'Для начала используй команду /start'
         bot.send_message(message.chat.id, reply)
 
 
 @bot.message_handler(commands=['notes'])
 def notes(message):
-    user_id = str(message.from_user.id)
+    user_id = int(message.from_user.id)
 
     try:
-        if not users[user_id]:
+        if not bq.get_last_record(user_id):
             reply = 'Ты ещё не начинал отслеживание сна. Используй /sleep.'
             bot.send_message(message.chat.id, reply)
             return
 
         # пока заметки можно оставить только за последний сон, можно доработать
-        last_sleep_date = max(users[user_id].keys())
+        last_record_id = bq.get_last_record(user_id)['id']
 
-        if 'duration' not in users[user_id][last_sleep_date]:
+        if bq.get_last_record(user_id)['duration'] is None:
             reply = 'Ты не можешь оставить заметку о сне, если не спал. Используй команды /sleep и /wake'
             bot.send_message(message.chat.id, reply)
             return
 
         note_lst = list(message.text.split())[1:]
         note = ' '.join(note_lst)
-        users[user_id][last_sleep_date]['notes'].append(note)
 
-        save_data()
+        if not note.strip():
+            reply = 'Напиши в заметке хоть что-то'
+            bot.send_message(message.chat.id, reply)
+            return
+
+        bq.add_note(last_record_id, note)
 
         reply = 'Заметка успешно сохранена'
         bot.reply_to(message, reply)
 
-    except KeyError:
+    except sq.OperationalError:
         reply = 'Для начала используй команду /start'
         bot.send_message(message.chat.id, reply)
 
 
 @bot.message_handler(commands=['show_notes'])
 def show_notes(message):
-    user_id = str(message.from_user.id)
+    user_id = int(message.from_user.id)
 
     try:
-        if not users[user_id]:
+        if not bq.get_last_record(user_id):
             reply = 'Ты ещё не начинал отслеживание сна. Используй /sleep.'
             bot.send_message(message.chat.id, reply)
             return
 
-        last_sleep_date = max(users[user_id].keys())
+        last_record_id = bq.get_last_record(user_id)['id']
 
-        if users[user_id][last_sleep_date]['notes']:
-            for i in users[user_id][last_sleep_date]['notes']:
+        if bq.check_notes(last_record_id) is not None:
+            for i in bq.get_notes(last_record_id):
                 bot.send_message(message.chat.id, i)
         else:
             reply = 'У тебя еще нет заметок'
             bot.send_message(message.chat.id, reply)
 
-    except KeyError:
+    except sq.OperationalError:
         reply = 'Для начала используй команду /start'
         bot.send_message(message.chat.id, reply)
 
